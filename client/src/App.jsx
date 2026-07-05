@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import * as sdk from 'matrix-js-sdk'
 import './App.css'
 
@@ -59,7 +59,13 @@ function App() {
   }
 
   if (matrixClient && userId) {
-    return <ChatShell userId={userId} onLogout={handleLogout} />
+    return (
+      <ChatShell
+        client={matrixClient}
+        userId={userId}
+        onLogout={handleLogout}
+      />
+    )
   }
 
   return (
@@ -108,7 +114,53 @@ function App() {
   )
 }
 
-function ChatShell({ userId, onLogout }) {
+function ChatShell({ client, userId, onLogout }) {
+  const [rooms, setRooms] = useState([])
+  const [selectedRoomId, setSelectedRoomId] = useState('')
+  const [syncStatus, setSyncStatus] = useState('Starting Matrix sync...')
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function startMatrixSync() {
+      try {
+        client.startClient({
+          initialSyncLimit: 20,
+        })
+
+        client.once('sync', (state) => {
+          if (!isMounted) return
+
+          if (state === 'PREPARED') {
+            const joinedRooms = client.getRooms()
+
+            setRooms(joinedRooms)
+
+            if (joinedRooms.length > 0) {
+              setSelectedRoomId(joinedRooms[0].roomId)
+            }
+
+            setSyncStatus(`Loaded ${joinedRooms.length} room(s).`)
+          } else {
+            setSyncStatus(`Sync state: ${state}`)
+          }
+        })
+      } catch (error) {
+        console.error(error)
+        setSyncStatus('Failed to start Matrix sync.')
+      }
+    }
+
+    startMatrixSync()
+
+    return () => {
+      isMounted = false
+      client.stopClient()
+    }
+  }, [client])
+
+  const selectedRoom = rooms.find((room) => room.roomId === selectedRoomId)
+
   return (
     <main className="chat-app">
       <aside className="sidebar">
@@ -123,15 +175,21 @@ function ChatShell({ userId, onLogout }) {
         <section className="room-section">
           <p className="section-title">Rooms</p>
 
-          <button className="room active" type="button">
-            <span>#</span>
-            BlueChat Test Room
-          </button>
+          {rooms.length === 0 && (
+            <p className="empty-room-list">{syncStatus}</p>
+          )}
 
-          <button className="room" type="button">
-            <span>#</span>
-            General
-          </button>
+          {rooms.map((room) => (
+            <button
+              key={room.roomId}
+              className={room.roomId === selectedRoomId ? 'room active' : 'room'}
+              type="button"
+              onClick={() => setSelectedRoomId(room.roomId)}
+            >
+              <span>#</span>
+              {room.name || room.roomId}
+            </button>
+          ))}
         </section>
 
         <button className="logout" type="button" onClick={onLogout}>
@@ -142,8 +200,8 @@ function ChatShell({ userId, onLogout }) {
       <section className="chat-panel">
         <header className="chat-header">
           <div>
-            <h1>BlueChat Test Room</h1>
-            <p>Matrix client connected as {userId}</p>
+            <h1>{selectedRoom?.name || 'No room selected'}</h1>
+            <p>{syncStatus}</p>
           </div>
         </header>
 
@@ -151,8 +209,14 @@ function ChatShell({ userId, onLogout }) {
           <div className="empty-state">
             <h2>Welcome to BlueChat</h2>
             <p>
-              Login is working. The next step is loading real Matrix rooms and messages.
+              Real Matrix room loading is working. The next step is reading messages from the selected room.
             </p>
+
+            {selectedRoom && (
+              <p className="room-id">
+                Room ID: {selectedRoom.roomId}
+              </p>
+            )}
           </div>
         </div>
 

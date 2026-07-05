@@ -261,3 +261,17 @@ button:disabled {
 .composer input {
   width: 100%;
 }
+
+.empty-room-list {
+  padding: 12px 4px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.room-id {
+  margin-top: 16px;
+  font-size: 13px;
+  color: #94a3b8;
+  word-break: break-all;
+}
