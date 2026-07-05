@@ -9,6 +9,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [status, setStatus] = useState('')
   const [userId, setUserId] = useState('')
+  const [matrixClient, setMatrixClient] = useState(null)
 
   async function handleLogin() {
     try {
@@ -28,6 +29,13 @@ function App() {
         password,
       })
 
+      const authenticatedClient = sdk.createClient({
+        baseUrl: HOMESERVER_URL,
+        accessToken: response.access_token,
+        userId: response.user_id,
+      })
+
+      setMatrixClient(authenticatedClient)
       setUserId(response.user_id)
       setStatus('Signed in successfully.')
     } catch (error) {
@@ -41,6 +49,17 @@ function App() {
 
       setStatus(`Login failed: ${message}`)
     }
+  }
+
+  function handleLogout() {
+    setMatrixClient(null)
+    setUserId('')
+    setPassword('')
+    setStatus('')
+  }
+
+  if (matrixClient && userId) {
+    return <ChatShell userId={userId} onLogout={handleLogout} />
   }
 
   return (
@@ -84,7 +103,65 @@ function App() {
         </p>
 
         {status && <p className="status">{status}</p>}
-        {userId && <p className="status success">Logged in as {userId}</p>}
+      </section>
+    </main>
+  )
+}
+
+function ChatShell({ userId, onLogout }) {
+  return (
+    <main className="chat-app">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="mini-logo">B</div>
+          <div>
+            <h2>BlueChat</h2>
+            <p>{userId}</p>
+          </div>
+        </div>
+
+        <section className="room-section">
+          <p className="section-title">Rooms</p>
+
+          <button className="room active" type="button">
+            <span>#</span>
+            BlueChat Test Room
+          </button>
+
+          <button className="room" type="button">
+            <span>#</span>
+            General
+          </button>
+        </section>
+
+        <button className="logout" type="button" onClick={onLogout}>
+          Logout
+        </button>
+      </aside>
+
+      <section className="chat-panel">
+        <header className="chat-header">
+          <div>
+            <h1>BlueChat Test Room</h1>
+            <p>Matrix client connected as {userId}</p>
+          </div>
+        </header>
+
+        <div className="message-area">
+          <div className="empty-state">
+            <h2>Welcome to BlueChat</h2>
+            <p>
+              Login is working. The next step is loading real Matrix rooms and messages.
+            </p>
+          </div>
+        </div>
+
+        <footer className="composer">
+          <input placeholder="Message composer placeholder" disabled />
+          <button type="button" disabled>
+            Send
+          </button>
+        </footer>
       </section>
     </main>
   )
