@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import * as sdk from 'matrix-js-sdk'
 import './App.css'
 
@@ -37,7 +37,7 @@ function App() {
 
       setMatrixClient(authenticatedClient)
       setUserId(response.user_id)
-      setStatus('Signed in successfully.')
+      setStatus('')
     } catch (error) {
       console.error(error)
 
@@ -52,6 +52,10 @@ function App() {
   }
 
   function handleLogout() {
+    if (matrixClient) {
+      matrixClient.stopClient()
+    }
+
     setMatrixClient(null)
     setUserId('')
     setPassword('')
@@ -117,7 +121,41 @@ function App() {
 function ChatShell({ client, userId, onLogout }) {
   const [rooms, setRooms] = useState([])
   const [selectedRoomId, setSelectedRoomId] = useState('')
+  const [messages, setMessages] = useState([])
+  const [draft, setDraft] = useState('')
   const [syncStatus, setSyncStatus] = useState('Starting Matrix sync...')
+  const [sendStatus, setSendStatus] = useState('')
+
+  const selectedRoom = useMemo(
+    () => rooms.find((room) => room.roomId === selectedRoomId),
+    [rooms, selectedRoomId],
+  )
+
+  function readMessagesFromRoom(room) {
+    if (!room) {
+      setMessages([])
+      return
+    }
+
+    const events = room.getLiveTimeline().getEvents()
+
+    const roomMessages = events
+      .filter((event) => event.getType() === 'm.room.message')
+      .map((event) => {
+        const content = event.getContent()
+        const sender = event.getSender()
+
+        return {
+          id: event.getId() || `${sender}-${event.getTs()}`,
+          sender,
+          body: content.body || '[Encrypted or unsupported message]',
+          timestamp: event.getTs(),
+          isMine: sender === userId,
+        }
+      })
+
+    setMessages(roomMessages)
+  }
 
   useEffect(() => {
     let isMounted = true
@@ -125,7 +163,7 @@ function ChatShell({ client, userId, onLogout }) {
     async function startMatrixSync() {
       try {
         client.startClient({
-          initialSyncLimit: 20,
+          initialSyncLimit: 50,
         })
 
         client.once('sync', (state) => {
@@ -137,13 +175,23 @@ function ChatShell({ client, userId, onLogout }) {
             setRooms(joinedRooms)
 
             if (joinedRooms.length > 0) {
-              setSelectedRoomId(joinedRooms[0].roomId)
+              const firstRoomId = joinedRooms[0].roomId
+              setSelectedRoomId(firstRoomId)
+              readMessagesFromRoom(joinedRooms[0])
             }
 
             setSyncStatus(`Loaded ${joinedRooms.length} room(s).`)
           } else {
             setSyncStatus(`Sync state: ${state}`)
           }
+        })
+
+        client.on('Room.timeline', (event, room, toStartOfTimeline) => {
+          if (!isMounted || toStartOfTimeline) return
+          if (!room || room.roomId !== selectedRoomId) return
+          if (event.getType() !== 'm.room.message') return
+
+          readMessagesFromRoom(room)
         })
       } catch (error) {
         console.error(error)
@@ -155,11 +203,50 @@ function ChatShell({ client, userId, onLogout }) {
 
     return () => {
       isMounted = false
+      client.removeAllListeners('Room.timeline')
       client.stopClient()
     }
-  }, [client])
+  }, [client, selectedRoomId])
 
-  const selectedRoom = rooms.find((room) => room.roomId === selectedRoomId)
+  useEffect(() => {
+    if (selectedRoom) {
+      readMessagesFromRoom(selectedRoom)
+    }
+  }, [selectedRoomId, selectedRoom])
+
+  async function handleSendMessage() {
+    const trimmed = draft.trim()
+
+    if (!trimmed || !selectedRoomId) {
+      return
+    }
+
+    try {
+      setSendStatus('Sending...')
+
+      await client.sendTextMessage(selectedRoomId, trimmed)
+
+      setDraft('')
+      setSendStatus('Sent.')
+    } catch (error) {
+      console.error(error)
+
+      const message =
+        error?.data?.error ||
+        error?.errcode ||
+        error?.message ||
+        'Unknown send error'
+
+      setSendStatus(`Send failed: ${message}`)
+    }
+  }
+
+  function handleDraftKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      handleSendMessage()
+    }
+  }
 
   return (
     <main className="chat-app">
@@ -205,26 +292,46 @@ function ChatShell({ client, userId, onLogout }) {
           </div>
         </header>
 
-        <div className="message-area">
-          <div className="empty-state">
-            <h2>Welcome to BlueChat</h2>
-            <p>
-              Real Matrix room loading is working. The next step is reading messages from the selected room.
-            </p>
-
-            {selectedRoom && (
-              <p className="room-id">
-                Room ID: {selectedRoom.roomId}
+        <div className="message-area real-messages">
+          {messages.length === 0 ? (
+            <div className="empty-state">
+              <h2>No messages yet</h2>
+              <p>
+                Select a room or send the first message from BlueChat.
               </p>
-            )}
-          </div>
+
+              {selectedRoom && (
+                <p className="room-id">
+                  Room ID: {selectedRoom.roomId}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="message-list">
+              {messages.map((message) => (
+                <article
+                  key={message.id}
+                  className={message.isMine ? 'message mine' : 'message'}
+                >
+                  <p className="message-sender">{message.sender}</p>
+                  <p className="message-body">{message.body}</p>
+                </article>
+              ))}
+            </div>
+          )}
         </div>
 
         <footer className="composer">
-          <input placeholder="Message composer placeholder" disabled />
-          <button type="button" disabled>
+          <input
+            placeholder="Type a message..."
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleDraftKeyDown}
+          />
+          <button type="button" onClick={handleSendMessage}>
             Send
           </button>
+          {sendStatus && <p className="send-status">{sendStatus}</p>}
         </footer>
       </section>
     </main>

@@ -112,11 +112,6 @@ button:hover {
   filter: brightness(0.96);
 }
 
-button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
 .hint {
   margin: 24px 0 0;
   font-size: 13px;
@@ -176,6 +171,13 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.empty-room-list {
+  padding: 12px 4px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .room {
   width: 100%;
   justify-content: flex-start;
@@ -226,13 +228,19 @@ button:disabled {
 }
 
 .message-area {
-  display: grid;
-  place-items: center;
+  min-height: 0;
   padding: 32px;
+  overflow-y: auto;
+}
+
+.real-messages {
+  display: block;
 }
 
 .empty-state {
-  max-width: 520px;
+  height: 100%;
+  display: grid;
+  place-items: center;
   text-align: center;
 }
 
@@ -247,8 +255,58 @@ button:disabled {
   line-height: 1.6;
 }
 
+.room-id {
+  margin-top: 16px;
+  font-size: 13px;
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.message-list {
+  display: grid;
+  gap: 14px;
+  align-content: end;
+  min-height: 100%;
+}
+
+.message {
+  max-width: 68%;
+  justify-self: start;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: white;
+  border: 1px solid #dbe7f3;
+  box-shadow: 0 10px 30px rgba(30, 72, 120, 0.06);
+}
+
+.message.mine {
+  justify-self: end;
+  background: #0b8f75;
+  color: white;
+  border-color: #0b8f75;
+}
+
+.message-sender {
+  font-size: 12px;
+  font-weight: 800;
+  color: #64748b;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.message.mine .message-sender {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.message-body {
+  font-size: 15px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .composer {
-  height: 82px;
+  min-height: 82px;
   display: grid;
   grid-template-columns: 1fr 100px;
   gap: 12px;
@@ -262,16 +320,8 @@ button:disabled {
   width: 100%;
 }
 
-.empty-room-list {
-  padding: 12px 4px;
-  color: #64748b;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.room-id {
-  margin-top: 16px;
+.send-status {
+  grid-column: 1 / -1;
   font-size: 13px;
-  color: #94a3b8;
-  word-break: break-all;
+  color: #64748b;
 }
