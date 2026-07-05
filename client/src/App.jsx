@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as sdk from 'matrix-js-sdk'
 import './App.css'
 
@@ -8,13 +8,11 @@ function App() {
   const [username, setUsername] = useState('allen')
   const [password, setPassword] = useState('')
   const [status, setStatus] = useState('')
-  const [userId, setUserId] = useState('')
-  const [matrixClient, setMatrixClient] = useState(null)
+  const [session, setSession] = useState(null)
 
   async function handleLogin() {
     try {
       setStatus('Signing in...')
-      setUserId('')
 
       const client = sdk.createClient({
         baseUrl: HOMESERVER_URL,
@@ -29,14 +27,11 @@ function App() {
         password,
       })
 
-      const authenticatedClient = sdk.createClient({
-        baseUrl: HOMESERVER_URL,
-        accessToken: response.access_token,
+      setSession({
         userId: response.user_id,
+        accessToken: response.access_token,
       })
 
-      setMatrixClient(authenticatedClient)
-      setUserId(response.user_id)
       setStatus('')
     } catch (error) {
       console.error(error)
@@ -52,21 +47,15 @@ function App() {
   }
 
   function handleLogout() {
-    if (matrixClient) {
-      matrixClient.stopClient()
-    }
-
-    setMatrixClient(null)
-    setUserId('')
+    setSession(null)
     setPassword('')
     setStatus('')
   }
 
-  if (matrixClient && userId) {
+  if (session) {
     return (
       <ChatShell
-        client={matrixClient}
-        userId={userId}
+        session={session}
         onLogout={handleLogout}
       />
     )
@@ -118,101 +107,207 @@ function App() {
   )
 }
 
-function ChatShell({ client, userId, onLogout }) {
+function ChatShell({ session, onLogout }) {
   const [rooms, setRooms] = useState([])
   const [selectedRoomId, setSelectedRoomId] = useState('')
-  const [messages, setMessages] = useState([])
+  const [messagesByRoom, setMessagesByRoom] = useState({})
   const [draft, setDraft] = useState('')
   const [syncStatus, setSyncStatus] = useState('Starting Matrix sync...')
   const [sendStatus, setSendStatus] = useState('')
+  const [sinceToken, setSinceToken] = useState('')
+
+  const selectedRoomIdRef = useRef('')
+  const messageEndRef = useRef(null)
 
   const selectedRoom = useMemo(
     () => rooms.find((room) => room.roomId === selectedRoomId),
     [rooms, selectedRoomId],
   )
 
-  function readMessagesFromRoom(room) {
-    if (!room) {
-      setMessages([])
-      return
-    }
+  const messages = messagesByRoom[selectedRoomId] || []
 
-    const events = room.getLiveTimeline().getEvents()
+  function formatTime(timestamp) {
+    if (!timestamp) return ''
 
-    const roomMessages = events
-      .filter((event) => event.getType() === 'm.room.message')
-      .map((event) => {
-        const content = event.getContent()
-        const sender = event.getSender()
-
-        return {
-          id: event.getId() || `${sender}-${event.getTs()}`,
-          sender,
-          body: content.body || '[Encrypted or unsupported message]',
-          timestamp: event.getTs(),
-          isMine: sender === userId,
-        }
-      })
-
-    setMessages(roomMessages)
+    return new Date(timestamp).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   }
 
-  useEffect(() => {
-    let isMounted = true
+  function getRoomName(roomId, roomData, previousRooms = []) {
+    const previousRoom = previousRooms.find((room) => room.roomId === roomId)
 
-    async function startMatrixSync() {
-      try {
-        client.startClient({
-          initialSyncLimit: 50,
-        })
+    const stateEvents = roomData?.state?.events || []
+    const timelineEvents = roomData?.timeline?.events || []
+    const allEvents = [...stateEvents, ...timelineEvents]
 
-        client.once('sync', (state) => {
-          if (!isMounted) return
+    const nameEvent = allEvents
+      .slice()
+      .reverse()
+      .find((event) => event.type === 'm.room.name')
 
-          if (state === 'PREPARED') {
-            const joinedRooms = client.getRooms()
+    const canonicalAliasEvent = allEvents
+      .slice()
+      .reverse()
+      .find((event) => event.type === 'm.room.canonical_alias')
 
-            setRooms(joinedRooms)
+    return (
+      nameEvent?.content?.name ||
+      canonicalAliasEvent?.content?.alias ||
+      previousRoom?.name ||
+      roomId
+    )
+  }
 
-            if (joinedRooms.length > 0) {
-              const firstRoomId = joinedRooms[0].roomId
-              setSelectedRoomId(firstRoomId)
-              readMessagesFromRoom(joinedRooms[0])
-            }
+  function extractMessages(roomId, roomData) {
+    const timelineEvents = roomData?.timeline?.events || []
 
-            setSyncStatus(`Loaded ${joinedRooms.length} room(s).`)
+    return timelineEvents
+      .filter((event) => event.type === 'm.room.message')
+      .map((event) => ({
+        id: event.event_id,
+        sender: event.sender,
+        body: event.content?.body || '[Encrypted or unsupported message]',
+        timestamp: event.origin_server_ts,
+        isMine: event.sender === session.userId,
+      }))
+  }
+
+  async function syncOnce(currentSinceToken = '') {
+    const params = new URLSearchParams({
+      timeout: '1000',
+    })
+
+    if (currentSinceToken) {
+      params.set('since', currentSinceToken)
+    }
+
+    const response = await fetch(
+      `${HOMESERVER_URL}/_matrix/client/v3/sync?${params.toString()}`,
+      {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+        },
+      },
+    )
+
+    if (!response.ok) {
+      throw new Error(`Sync failed: ${response.status}`)
+    }
+
+    const data = await response.json()
+    const joinedRooms = data?.rooms?.join || {}
+
+    const nextRooms = Object.entries(joinedRooms).map(([roomId, roomData]) => ({
+      roomId,
+      name: getRoomName(roomId, roomData, rooms),
+    }))
+
+    if (nextRooms.length > 0) {
+      setRooms((previousRooms) => {
+        const merged = [...previousRooms]
+
+        for (const room of nextRooms) {
+          const index = merged.findIndex((item) => item.roomId === room.roomId)
+
+          if (index === -1) {
+            merged.push(room)
           } else {
-            setSyncStatus(`Sync state: ${state}`)
+            merged[index] = {
+              ...merged[index],
+              ...room,
+            }
           }
-        })
+        }
 
-        client.on('Room.timeline', (event, room, toStartOfTimeline) => {
-          if (!isMounted || toStartOfTimeline) return
-          if (!room || room.roomId !== selectedRoomId) return
-          if (event.getType() !== 'm.room.message') return
+        return merged
+      })
 
-          readMessagesFromRoom(room)
-        })
-      } catch (error) {
-        console.error(error)
-        setSyncStatus('Failed to start Matrix sync.')
+      if (!selectedRoomIdRef.current) {
+        selectedRoomIdRef.current = nextRooms[0].roomId
+        setSelectedRoomId(nextRooms[0].roomId)
       }
     }
 
-    startMatrixSync()
+    setMessagesByRoom((previousMessagesByRoom) => {
+      const updated = { ...previousMessagesByRoom }
+
+      for (const [roomId, roomData] of Object.entries(joinedRooms)) {
+        const newMessages = extractMessages(roomId, roomData)
+
+        if (newMessages.length === 0) {
+          continue
+        }
+
+        const oldMessages = updated[roomId] || []
+        const map = new Map()
+
+        for (const message of oldMessages) {
+          map.set(message.id, message)
+        }
+
+        for (const message of newMessages) {
+          map.set(message.id, message)
+        }
+
+        updated[roomId] = Array.from(map.values()).sort(
+          (a, b) => a.timestamp - b.timestamp,
+        )
+      }
+
+      return updated
+    })
+
+    setSyncStatus(`Loaded ${Object.keys(joinedRooms).length} updated room(s).`)
+    setSinceToken(data.next_batch || currentSinceToken)
+
+    return data.next_batch || currentSinceToken
+  }
+
+  useEffect(() => {
+    selectedRoomIdRef.current = selectedRoomId
+  }, [selectedRoomId])
+
+  useEffect(() => {
+    let isMounted = true
+    let intervalId = null
+    let latestSinceToken = ''
+
+    async function runSync() {
+      try {
+        latestSinceToken = await syncOnce(latestSinceToken)
+
+        if (!isMounted) {
+          return
+        }
+      } catch (error) {
+        console.error(error)
+        setSyncStatus(error.message || 'Sync failed.')
+      }
+    }
+
+    runSync()
+
+    intervalId = window.setInterval(() => {
+      runSync()
+    }, 1000)
 
     return () => {
       isMounted = false
-      client.removeAllListeners('Room.timeline')
-      client.stopClient()
+
+      if (intervalId) {
+        window.clearInterval(intervalId)
+      }
     }
-  }, [client, selectedRoomId])
+  }, [session.accessToken])
 
   useEffect(() => {
-    if (selectedRoom) {
-      readMessagesFromRoom(selectedRoom)
-    }
-  }, [selectedRoomId, selectedRoom])
+    messageEndRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'end',
+    })
+  }, [messages])
 
   async function handleSendMessage() {
     const trimmed = draft.trim()
@@ -224,20 +319,35 @@ function ChatShell({ client, userId, onLogout }) {
     try {
       setSendStatus('Sending...')
 
-      await client.sendTextMessage(selectedRoomId, trimmed)
+      const txnId = `bluechat-${Date.now()}`
+
+      const response = await fetch(
+        `${HOMESERVER_URL}/_matrix/client/v3/rooms/${encodeURIComponent(selectedRoomId)}/send/m.room.message/${txnId}`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${session.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            msgtype: 'm.text',
+            body: trimmed,
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `Send failed: ${response.status}`)
+      }
 
       setDraft('')
-      setSendStatus('Sent.')
+      setSendStatus('')
+
+      await syncOnce(sinceToken)
     } catch (error) {
       console.error(error)
-
-      const message =
-        error?.data?.error ||
-        error?.errcode ||
-        error?.message ||
-        'Unknown send error'
-
-      setSendStatus(`Send failed: ${message}`)
+      setSendStatus(`Send failed: ${error.message}`)
     }
   }
 
@@ -255,7 +365,7 @@ function ChatShell({ client, userId, onLogout }) {
           <div className="mini-logo">B</div>
           <div>
             <h2>BlueChat</h2>
-            <p>{userId}</p>
+            <p>{session.userId}</p>
           </div>
         </div>
 
@@ -271,7 +381,10 @@ function ChatShell({ client, userId, onLogout }) {
               key={room.roomId}
               className={room.roomId === selectedRoomId ? 'room active' : 'room'}
               type="button"
-              onClick={() => setSelectedRoomId(room.roomId)}
+              onClick={() => {
+                selectedRoomIdRef.current = room.roomId
+                setSelectedRoomId(room.roomId)
+              }}
             >
               <span>#</span>
               {room.name || room.roomId}
@@ -299,12 +412,6 @@ function ChatShell({ client, userId, onLogout }) {
               <p>
                 Select a room or send the first message from BlueChat.
               </p>
-
-              {selectedRoom && (
-                <p className="room-id">
-                  Room ID: {selectedRoom.roomId}
-                </p>
-              )}
             </div>
           ) : (
             <div className="message-list">
@@ -315,8 +422,10 @@ function ChatShell({ client, userId, onLogout }) {
                 >
                   <p className="message-sender">{message.sender}</p>
                   <p className="message-body">{message.body}</p>
+                  <p className="message-time">{formatTime(message.timestamp)}</p>
                 </article>
               ))}
+              <div ref={messageEndRef} />
             </div>
           )}
         </div>

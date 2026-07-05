@@ -325,3 +325,14 @@ button:hover {
   font-size: 13px;
   color: #64748b;
 }
+
+.message-time {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: right;
+}
+
+.message.mine .message-time {
+  color: rgba(255, 255, 255, 0.72);
+}
